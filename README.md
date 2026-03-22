@@ -41,6 +41,9 @@ MCP_AUTH_SCOPE=user
 
 # Optional, colon-separated
 MCP_ALLOWED_ROOTS=/srv/telegram-mcp:/tmp/telegram-mcp
+
+# Optional, comma-separated host allowlist override for FastMCP transport security
+MCP_ALLOWED_HOSTS=telegram-mcp.example.com,telegram-mcp.example.com:*
 ```
 
 Notes:
@@ -51,6 +54,7 @@ Notes:
 - Use either `TELEGRAM_SESSION_STRING` or a persistent `TELEGRAM_SESSION_NAME`.
 - On Railway, the app will also honor Railway's injected `PORT` automatically.
 - On Railway, if you use the generated Railway domain, the app can also derive the public base URL from `RAILWAY_PUBLIC_DOMAIN`.
+- If you need to override FastMCP host-header validation, set `MCP_ALLOWED_HOSTS`.
 
 ## Telegram Session Setup
 

@@ -25,6 +25,7 @@ import uvicorn
 from mcp.server.auth.routes import create_auth_routes
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from mcp.shared.exceptions import McpError
 from pythonjsonlogger import jsonlogger
@@ -136,6 +137,35 @@ MCP_OAUTH_VALIDATE_RESOURCE = os.getenv("MCP_OAUTH_VALIDATE_RESOURCE", "true").l
 MCP_RESOURCE_SERVER_URL = f"{MCP_PUBLIC_BASE_URL}/mcp"
 MCP_LOGIN_URL = f"{MCP_PUBLIC_BASE_URL}/login"
 
+
+def _build_allowed_hosts() -> list[str]:
+    explicit = _first_non_empty(os.getenv("MCP_ALLOWED_HOSTS", ""))
+    if explicit:
+        return [value.strip() for value in explicit.split(",") if value.strip()]
+
+    parsed_base_url = urlparse(MCP_PUBLIC_BASE_URL)
+    hostname = parsed_base_url.hostname or ""
+    netloc = parsed_base_url.netloc or ""
+
+    allowed_hosts = [
+        "localhost",
+        "localhost:*",
+        "127.0.0.1",
+        "127.0.0.1:*",
+        "0.0.0.0",
+        "0.0.0.0:*",
+    ]
+
+    if hostname:
+        allowed_hosts.extend([hostname, f"{hostname}:*"])
+    if netloc and netloc not in allowed_hosts:
+        allowed_hosts.append(netloc)
+
+    return allowed_hosts
+
+
+transport_security = TransportSecuritySettings(allowed_hosts=_build_allowed_hosts())
+
 oauth_provider = SingleUserOAuthProvider(
     config=SingleUserOAuthConfig(
         username=MCP_AUTH_USERNAME,
@@ -168,6 +198,7 @@ mcp = FastMCP(
     json_response=True,
     token_verifier=token_verifier,
     auth=auth_settings,
+    transport_security=transport_security,
 )
 mcp.settings.streamable_http_path = "/mcp"
 
