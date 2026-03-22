@@ -7,6 +7,7 @@ import asyncio
 import sqlite3
 import logging
 import mimetypes
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import List, Dict, Optional, Union, Any
@@ -14,8 +15,15 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 # Third-party libraries
-import nest_asyncio
 from dotenv import load_dotenv
+from pydantic import AnyHttpUrl
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse, Response
+from starlette.routing import Mount, Route
+import uvicorn
+from mcp.server.auth.routes import create_auth_routes
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import ToolAnnotations
 from mcp.shared.exceptions import McpError
@@ -44,6 +52,7 @@ from telethon.tl.types import (
 import re
 from functools import wraps
 import telethon.errors.rpcerrorlist
+from single_user_oauth import LocalTokenVerifier, SingleUserOAuthConfig, SingleUserOAuthProvider
 
 
 class ValidationError(Exception):
@@ -89,14 +98,64 @@ def get_entity_filter_type(entity: Any) -> Optional[str]:
 
 load_dotenv()
 
-TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID"))
-TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
-TELEGRAM_SESSION_NAME = os.getenv("TELEGRAM_SESSION_NAME")
+TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+TELEGRAM_SESSION_NAME = os.getenv("TELEGRAM_SESSION_NAME") or "telegram_mcp_session"
 
 # Check if a string session exists in environment, otherwise use file-based session
 SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING")
+MCP_BIND_HOST = os.getenv("MCP_BIND_HOST", "0.0.0.0")
+MCP_BIND_PORT = int(os.getenv("MCP_BIND_PORT", os.getenv("PORT", "8000")))
+MCP_PUBLIC_BASE_URL = os.getenv(
+    "MCP_PUBLIC_BASE_URL", f"http://localhost:{MCP_BIND_PORT}"
+).rstrip("/")
+MCP_AUTH_USERNAME = os.getenv("MCP_AUTH_USERNAME", "admin")
+MCP_AUTH_PASSWORD = os.getenv("MCP_AUTH_PASSWORD", "change-me")
+MCP_AUTH_SCOPE = os.getenv("MCP_AUTH_SCOPE", "user")
+MCP_TOKEN_TTL_SECONDS = int(os.getenv("MCP_TOKEN_TTL_SECONDS", "3600"))
+MCP_CODE_TTL_SECONDS = int(os.getenv("MCP_CODE_TTL_SECONDS", "300"))
+MCP_OAUTH_VALIDATE_RESOURCE = os.getenv("MCP_OAUTH_VALIDATE_RESOURCE", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+MCP_RESOURCE_SERVER_URL = f"{MCP_PUBLIC_BASE_URL}/mcp"
+MCP_LOGIN_URL = f"{MCP_PUBLIC_BASE_URL}/login"
 
-mcp = FastMCP("telegram")
+oauth_provider = SingleUserOAuthProvider(
+    config=SingleUserOAuthConfig(
+        username=MCP_AUTH_USERNAME,
+        password=MCP_AUTH_PASSWORD,
+        scope=MCP_AUTH_SCOPE,
+        authorization_code_ttl_seconds=MCP_CODE_TTL_SECONDS,
+        access_token_ttl_seconds=MCP_TOKEN_TTL_SECONDS,
+    ),
+    login_url=MCP_LOGIN_URL,
+)
+token_verifier = LocalTokenVerifier(
+    provider=oauth_provider,
+    server_url=MCP_RESOURCE_SERVER_URL,
+    validate_resource_binding=MCP_OAUTH_VALIDATE_RESOURCE,
+)
+auth_settings = AuthSettings(
+    issuer_url=AnyHttpUrl(MCP_PUBLIC_BASE_URL),
+    resource_server_url=AnyHttpUrl(MCP_RESOURCE_SERVER_URL),
+    required_scopes=[MCP_AUTH_SCOPE],
+    client_registration_options=ClientRegistrationOptions(
+        enabled=True,
+        valid_scopes=[MCP_AUTH_SCOPE],
+        default_scopes=[MCP_AUTH_SCOPE],
+    ),
+)
+
+mcp = FastMCP(
+    "telegram",
+    stateless_http=True,
+    json_response=True,
+    token_verifier=token_verifier,
+    auth=auth_settings,
+)
+mcp.settings.streamable_http_path = "/"
 
 if SESSION_STRING:
     # Use the string session if available
@@ -429,6 +488,26 @@ def _dedupe_paths(paths: List[Path]) -> List[Path]:
     return result
 
 
+def _configure_allowed_roots_from_env() -> None:
+    raw_roots = os.getenv("MCP_ALLOWED_ROOTS", "").strip()
+    if not raw_roots:
+        return
+
+    resolved_roots: List[Path] = []
+    for raw_root in raw_roots.split(os.pathsep):
+        value = raw_root.strip()
+        if not value:
+            continue
+
+        try:
+            resolved_roots.append(Path(value).expanduser().resolve(strict=True))
+        except FileNotFoundError:
+            raise ValueError(f"Configured MCP_ALLOWED_ROOTS entry does not exist: {value}")
+
+    global SERVER_ALLOWED_ROOTS
+    SERVER_ALLOWED_ROOTS = _dedupe_paths(resolved_roots)
+
+
 def _contains_forbidden_path_patterns(raw_path: str) -> Optional[str]:
     value = raw_path.strip()
     if not value:
@@ -672,6 +751,9 @@ def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
     )
     parser.add_argument("allowed_roots", nargs="*")
     parsed, _unknown = parser.parse_known_args(argv or [])
+
+    if not parsed.allowed_roots:
+        return
 
     resolved_roots: List[Path] = []
     for raw_root in parsed.allowed_roots:
@@ -4713,34 +4795,139 @@ async def reorder_folders(folder_ids: List[int]) -> str:
         )
 
 
-async def _main() -> None:
+def _validate_runtime_configuration() -> None:
+    if TELEGRAM_API_ID <= 0:
+        raise RuntimeError("TELEGRAM_API_ID must be configured.")
+    if not TELEGRAM_API_HASH:
+        raise RuntimeError("TELEGRAM_API_HASH must be configured.")
+    if not SESSION_STRING and not TELEGRAM_SESSION_NAME:
+        raise RuntimeError(
+            "Provide TELEGRAM_SESSION_STRING or TELEGRAM_SESSION_NAME for Telegram auth."
+        )
+    if not MCP_AUTH_USERNAME:
+        raise RuntimeError("MCP_AUTH_USERNAME must be configured.")
+    if not MCP_AUTH_PASSWORD or MCP_AUTH_PASSWORD == "change-me":
+        raise RuntimeError("Set MCP_AUTH_PASSWORD to a non-default value before starting.")
+
+    parsed_base_url = urlparse(MCP_PUBLIC_BASE_URL)
+    if not parsed_base_url.scheme or not parsed_base_url.netloc:
+        raise RuntimeError("MCP_PUBLIC_BASE_URL must be an absolute URL.")
+    if parsed_base_url.path not in ("", "/"):
+        raise RuntimeError(
+            "MCP_PUBLIC_BASE_URL must not include a path. Use a dedicated domain or subdomain."
+        )
+    if (
+        parsed_base_url.scheme != "https"
+        and parsed_base_url.hostname not in {"localhost", "127.0.0.1"}
+    ):
+        raise RuntimeError("MCP_PUBLIC_BASE_URL must use HTTPS unless you are running locally.")
+
+
+async def _start_telegram_client() -> None:
+    if client.is_connected():
+        return
+
     try:
-        # Start the Telethon client non-interactively
-        print("Starting Telegram client...", file=sys.stderr)
         await client.start()
-
-        # Warm entity cache — StringSession has no persistent cache,
-        # so fetch all dialogs once to populate it
-        print("Warming entity cache...")
         await client.get_dialogs()
-
-        print("Telegram client started. Running MCP server...")
-        # Use the asynchronous entrypoint instead of mcp.run()
-        await mcp.run_stdio_async()
     except Exception as e:
-        print(f"Error starting client: {e}", file=sys.stderr)
         if isinstance(e, sqlite3.OperationalError) and "database is locked" in str(e):
-            print(
-                "Database lock detected. Please ensure no other instances are running.",
-                file=sys.stderr,
-            )
-        sys.exit(1)
+            raise RuntimeError(
+                "Telegram session database is locked. Ensure only one instance is running."
+            ) from e
+        raise
+
+
+async def _stop_telegram_client() -> None:
+    if client.is_connected():
+        await client.disconnect()
+
+
+async def _index(_request: Request) -> Response:
+    return JSONResponse(
+        {
+            "name": "telegram-mcp",
+            "transport": "streamable-http",
+            "mcp_url": MCP_RESOURCE_SERVER_URL,
+            "authorization_server": MCP_PUBLIC_BASE_URL,
+            "required_scope": MCP_AUTH_SCOPE,
+        }
+    )
+
+
+async def _healthz(_request: Request) -> Response:
+    return JSONResponse({"ok": True, "telegram_connected": client.is_connected()})
+
+
+async def _login_page(request: Request) -> Response:
+    state = request.query_params.get("state")
+    if not state:
+        return PlainTextResponse("Missing state parameter.", status_code=400)
+    return await oauth_provider.get_login_page(state)
+
+
+async def _login_callback(request: Request) -> Response:
+    return await oauth_provider.handle_login_callback(request)
+
+
+async def _protected_resource_metadata(_request: Request) -> Response:
+    return JSONResponse(
+        {
+            "resource": MCP_RESOURCE_SERVER_URL,
+            "authorization_servers": [MCP_PUBLIC_BASE_URL],
+            "scopes_supported": [MCP_AUTH_SCOPE],
+            "bearer_methods_supported": ["header"],
+        }
+    )
+
+
+@asynccontextmanager
+async def lifespan(_app: Starlette):
+    _validate_runtime_configuration()
+
+    async with AsyncExitStack() as stack:
+        await _start_telegram_client()
+        await stack.enter_async_context(mcp.session_manager.run())
+        try:
+            yield
+        finally:
+            await _stop_telegram_client()
+
+
+def create_app() -> Starlette:
+    routes = create_auth_routes(
+        provider=oauth_provider,
+        issuer_url=auth_settings.issuer_url,
+        service_documentation_url=auth_settings.service_documentation_url,
+        client_registration_options=auth_settings.client_registration_options,
+        revocation_options=auth_settings.revocation_options,
+    )
+    routes.extend(
+        [
+            Route("/", endpoint=_index, methods=["GET"]),
+            Route("/healthz", endpoint=_healthz, methods=["GET"]),
+            Route("/login", endpoint=_login_page, methods=["GET"]),
+            Route("/login/callback", endpoint=_login_callback, methods=["POST"]),
+            Route(
+                "/.well-known/oauth-protected-resource",
+                endpoint=_protected_resource_metadata,
+                methods=["GET"],
+            ),
+            Mount("/mcp", app=mcp.streamable_http_app()),
+        ]
+    )
+
+    return Starlette(routes=routes, lifespan=lifespan)
+
+
+_configure_allowed_roots_from_env()
+app = create_app()
 
 
 def main() -> None:
     _configure_allowed_roots_from_cli(sys.argv[1:])
-    nest_asyncio.apply()
-    asyncio.run(_main())
+    _validate_runtime_configuration()
+    uvicorn.run(app, host=MCP_BIND_HOST, port=MCP_BIND_PORT)
 
 
 if __name__ == "__main__":
