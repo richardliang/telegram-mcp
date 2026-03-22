@@ -107,6 +107,13 @@ def _first_non_empty(*values: str) -> str:
     return ""
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 TELEGRAM_SESSION_NAME = os.getenv("TELEGRAM_SESSION_NAME") or "telegram_mcp_session"
@@ -129,11 +136,7 @@ MCP_AUTH_PASSWORD = os.getenv("MCP_AUTH_PASSWORD", "change-me")
 MCP_AUTH_SCOPE = os.getenv("MCP_AUTH_SCOPE", "user")
 MCP_TOKEN_TTL_SECONDS = int(os.getenv("MCP_TOKEN_TTL_SECONDS", "3600"))
 MCP_CODE_TTL_SECONDS = int(os.getenv("MCP_CODE_TTL_SECONDS", "300"))
-MCP_OAUTH_VALIDATE_RESOURCE = os.getenv("MCP_OAUTH_VALIDATE_RESOURCE", "true").lower() not in {
-    "0",
-    "false",
-    "no",
-}
+MCP_OAUTH_VALIDATE_RESOURCE = _env_flag("MCP_OAUTH_VALIDATE_RESOURCE", True)
 MCP_RESOURCE_SERVER_URL = f"{MCP_PUBLIC_BASE_URL}/mcp"
 MCP_LOGIN_URL = f"{MCP_PUBLIC_BASE_URL}/login"
 
@@ -164,7 +167,20 @@ def _build_allowed_hosts() -> list[str]:
     return allowed_hosts
 
 
-transport_security = TransportSecuritySettings(allowed_hosts=_build_allowed_hosts())
+_parsed_public_base_url = urlparse(MCP_PUBLIC_BASE_URL)
+_public_base_is_local = (_parsed_public_base_url.hostname or "") in {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+}
+MCP_ENABLE_DNS_REBINDING_PROTECTION = _env_flag(
+    "MCP_ENABLE_DNS_REBINDING_PROTECTION", _public_base_is_local
+)
+
+transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=MCP_ENABLE_DNS_REBINDING_PROTECTION,
+    allowed_hosts=_build_allowed_hosts(),
+)
 
 oauth_provider = SingleUserOAuthProvider(
     config=SingleUserOAuthConfig(
@@ -194,6 +210,8 @@ auth_settings = AuthSettings(
 
 mcp = FastMCP(
     "telegram",
+    host=MCP_BIND_HOST,
+    port=MCP_BIND_PORT,
     stateless_http=True,
     json_response=True,
     token_verifier=token_verifier,

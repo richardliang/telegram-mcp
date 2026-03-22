@@ -44,6 +44,9 @@ MCP_ALLOWED_ROOTS=/srv/telegram-mcp:/tmp/telegram-mcp
 
 # Optional, comma-separated host allowlist override for FastMCP transport security
 MCP_ALLOWED_HOSTS=telegram-mcp.example.com,telegram-mcp.example.com:*
+
+# Optional, defaults to false on public remote deployments
+MCP_ENABLE_DNS_REBINDING_PROTECTION=false
 ```
 
 Notes:
@@ -55,6 +58,7 @@ Notes:
 - On Railway, the app will also honor Railway's injected `PORT` automatically.
 - On Railway, if you use the generated Railway domain, the app can also derive the public base URL from `RAILWAY_PUBLIC_DOMAIN`.
 - If you need to override FastMCP host-header validation, set `MCP_ALLOWED_HOSTS`.
+- DNS rebinding protection defaults to off for public remote deployments and on for localhost-style deployments. Override with `MCP_ENABLE_DNS_REBINDING_PROTECTION`.
 
 ## Telegram Session Setup
 
