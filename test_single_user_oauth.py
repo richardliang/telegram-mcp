@@ -77,3 +77,37 @@ async def test_local_token_verifier_accepts_bound_token():
     verified = await verifier.verify_token(token.access_token)
     assert verified is not None
     assert verified.token == token.access_token
+
+
+@pytest.mark.asyncio
+async def test_exchange_authorization_code_supports_non_expiring_tokens():
+    provider = SingleUserOAuthProvider(
+        config=SingleUserOAuthConfig(
+            username="owner",
+            password="secret",
+            access_token_ttl_seconds=0,
+        ),
+        login_url="http://localhost:8000/login",
+    )
+    provider.pending_states["state-1"] = {
+        "redirect_uri": "http://localhost/callback",
+        "redirect_uri_provided_explicitly": True,
+        "code_challenge": "challenge",
+        "client_id": "client-123",
+        "resource": "http://localhost:8000/mcp",
+    }
+
+    await provider.finish_login("owner", "secret", "state-1")
+    auth_code = next(iter(provider.auth_codes.values()))
+    token = await provider.exchange_authorization_code(_Client("client-123"), auth_code)
+
+    stored_token = provider.tokens[token.access_token]
+    verifier = LocalTokenVerifier(
+        provider=provider,
+        server_url="http://localhost:8000/mcp",
+        validate_resource_binding=True,
+    )
+
+    assert token.expires_in is None
+    assert stored_token.expires_at is None
+    assert await verifier.verify_token(token.access_token) is not None

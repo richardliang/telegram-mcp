@@ -222,11 +222,15 @@ class SingleUserOAuthProvider(
             raise ValueError("Missing client_id")
 
         token_value = f"mcp_token_{secrets.token_hex(32)}"
+        expires_at = None
+        if self.config.access_token_ttl_seconds > 0:
+            expires_at = int(time.time()) + self.config.access_token_ttl_seconds
+
         self.tokens[token_value] = AccessToken(
             token=token_value,
             client_id=client.client_id,
             scopes=authorization_code.scopes,
-            expires_at=int(time.time()) + self.config.access_token_ttl_seconds,
+            expires_at=expires_at,
             resource=authorization_code.resource,
         )
         del self.auth_codes[authorization_code.code]
@@ -234,7 +238,11 @@ class SingleUserOAuthProvider(
         return OAuthToken(
             access_token=token_value,
             token_type="Bearer",
-            expires_in=self.config.access_token_ttl_seconds,
+            expires_in=(
+                self.config.access_token_ttl_seconds
+                if self.config.access_token_ttl_seconds > 0
+                else None
+            ),
             scope=" ".join(authorization_code.scopes),
         )
 

@@ -38,6 +38,7 @@ MCP_PUBLIC_BASE_URL=https://telegram-mcp.example.com
 MCP_AUTH_USERNAME=me
 MCP_AUTH_PASSWORD=replace-this-now
 MCP_AUTH_SCOPE=user
+MCP_TOKEN_TTL_SECONDS=3600
 
 # Optional, colon-separated
 MCP_ALLOWED_ROOTS=/srv/telegram-mcp:/tmp/telegram-mcp
@@ -54,6 +55,7 @@ Notes:
 - `MCP_PUBLIC_BASE_URL` must be the public HTTPS origin of the deployment.
 - Do not include a path in `MCP_PUBLIC_BASE_URL`.
 - `MCP_AUTH_PASSWORD` must be changed from the placeholder value.
+- `MCP_TOKEN_TTL_SECONDS` controls the access-token lifetime in seconds. Set it to `0` for non-expiring tokens.
 - Use either `TELEGRAM_SESSION_STRING` or a persistent `TELEGRAM_SESSION_NAME`.
 - On Railway, the app will also honor Railway's injected `PORT` automatically.
 - On Railway, if you use the generated Railway domain, the app can also derive the public base URL from `RAILWAY_PUBLIC_DOMAIN`.
