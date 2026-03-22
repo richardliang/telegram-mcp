@@ -50,6 +50,7 @@ Notes:
 - `MCP_AUTH_PASSWORD` must be changed from the placeholder value.
 - Use either `TELEGRAM_SESSION_STRING` or a persistent `TELEGRAM_SESSION_NAME`.
 - On Railway, the app will also honor Railway's injected `PORT` automatically.
+- On Railway, if you use the generated Railway domain, the app can also derive the public base URL from `RAILWAY_PUBLIC_DOMAIN`.
 
 ## Telegram Session Setup
 

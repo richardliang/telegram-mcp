@@ -98,6 +98,14 @@ def get_entity_filter_type(entity: Any) -> Optional[str]:
 
 load_dotenv()
 
+
+def _first_non_empty(*values: str) -> str:
+    for value in values:
+        if value and value.strip():
+            return value.strip()
+    return ""
+
+
 TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 TELEGRAM_SESSION_NAME = os.getenv("TELEGRAM_SESSION_NAME") or "telegram_mcp_session"
@@ -106,8 +114,14 @@ TELEGRAM_SESSION_NAME = os.getenv("TELEGRAM_SESSION_NAME") or "telegram_mcp_sess
 SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING")
 MCP_BIND_HOST = os.getenv("MCP_BIND_HOST", "0.0.0.0")
 MCP_BIND_PORT = int(os.getenv("MCP_BIND_PORT", os.getenv("PORT", "8000")))
-MCP_PUBLIC_BASE_URL = os.getenv(
-    "MCP_PUBLIC_BASE_URL", f"http://localhost:{MCP_BIND_PORT}"
+MCP_PUBLIC_BASE_URL = _first_non_empty(
+    os.getenv("MCP_PUBLIC_BASE_URL", ""),
+    (
+        f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN', '').strip()}"
+        if os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+        else ""
+    ),
+    f"http://localhost:{MCP_BIND_PORT}",
 ).rstrip("/")
 MCP_AUTH_USERNAME = os.getenv("MCP_AUTH_USERNAME", "admin")
 MCP_AUTH_PASSWORD = os.getenv("MCP_AUTH_PASSWORD", "change-me")
@@ -155,7 +169,7 @@ mcp = FastMCP(
     token_verifier=token_verifier,
     auth=auth_settings,
 )
-mcp.settings.streamable_http_path = "/"
+mcp.settings.streamable_http_path = "/mcp"
 
 if SESSION_STRING:
     # Use the string session if available
@@ -4881,6 +4895,10 @@ async def _protected_resource_metadata(_request: Request) -> Response:
     )
 
 
+async def _protected_resource_metadata_mcp(_request: Request) -> Response:
+    return await _protected_resource_metadata(_request)
+
+
 @asynccontextmanager
 async def lifespan(_app: Starlette):
     _validate_runtime_configuration()
@@ -4895,6 +4913,7 @@ async def lifespan(_app: Starlette):
 
 
 def create_app() -> Starlette:
+    mcp_http_app = mcp.streamable_http_app()
     routes = create_auth_routes(
         provider=oauth_provider,
         issuer_url=auth_settings.issuer_url,
@@ -4913,7 +4932,12 @@ def create_app() -> Starlette:
                 endpoint=_protected_resource_metadata,
                 methods=["GET"],
             ),
-            Mount("/mcp", app=mcp.streamable_http_app()),
+            Route(
+                "/.well-known/oauth-protected-resource/mcp",
+                endpoint=_protected_resource_metadata_mcp,
+                methods=["GET"],
+            ),
+            Mount("/", app=mcp_http_app),
         ]
     )
 
