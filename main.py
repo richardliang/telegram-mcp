@@ -231,6 +231,8 @@ else:
 logger = logging.getLogger("telegram_mcp")
 logger.setLevel(logging.ERROR)  # Set to ERROR for production, INFO for debugging
 
+_telegram_client_lock = asyncio.Lock()
+
 # Create console handler
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.ERROR)  # Set to ERROR for production, INFO for debugging
@@ -438,6 +440,43 @@ def validate_id(*param_names_to_validate):
         return wrapper
 
     return decorator
+
+
+async def _ensure_telegram_client() -> None:
+    if client.is_connected():
+        return
+
+    async with _telegram_client_lock:
+        if client.is_connected():
+            return
+        await _start_telegram_client()
+
+
+def _wrap_tool_with_telegram_connection(func):
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            await _ensure_telegram_client()
+        except Exception as e:
+            return log_and_format_error(func.__name__, e)
+        return await func(*args, **kwargs)
+
+    return wrapper
+
+
+_base_mcp_tool = mcp.tool
+
+
+def _mcp_tool_with_telegram_connection(*tool_args, **tool_kwargs):
+    def decorator(func):
+        return _base_mcp_tool(*tool_args, **tool_kwargs)(
+            _wrap_tool_with_telegram_connection(func)
+        )
+
+    return decorator
+
+
+mcp.tool = _mcp_tool_with_telegram_connection
 
 
 def format_entity(entity) -> Dict[str, Any]:
