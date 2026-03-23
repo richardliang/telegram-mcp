@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -94,5 +95,38 @@ async def test_wrapped_tool_returns_formatted_error_when_reconnect_fails(monkeyp
     wrapped = main._wrap_tool_with_telegram_connection(dummy_tool)
     result = await wrapped()
 
-    assert "An error occurred (code:" in result
+    assert result == "connect failed"
     assert tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_lifespan_does_not_eagerly_start_telegram_client(monkeypatch):
+    start_calls = 0
+    stop_calls = 0
+    session_manager_calls = 0
+
+    async def fake_start():
+        nonlocal start_calls
+        start_calls += 1
+
+    async def fake_stop():
+        nonlocal stop_calls
+        stop_calls += 1
+
+    @asynccontextmanager
+    async def fake_run():
+        nonlocal session_manager_calls
+        session_manager_calls += 1
+        yield
+
+    monkeypatch.setattr(main, "_start_telegram_client", fake_start)
+    monkeypatch.setattr(main, "_stop_telegram_client", fake_stop)
+    monkeypatch.setattr(main, "_validate_runtime_configuration", lambda: None)
+    monkeypatch.setattr(main.mcp.session_manager, "run", fake_run)
+
+    async with main.lifespan(None):
+        pass
+
+    assert start_calls == 0
+    assert stop_calls == 1
+    assert session_manager_calls == 1

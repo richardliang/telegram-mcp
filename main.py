@@ -458,7 +458,8 @@ def _wrap_tool_with_telegram_connection(func):
         try:
             await _ensure_telegram_client()
         except Exception as e:
-            return log_and_format_error(func.__name__, e)
+            user_message = str(e) if isinstance(e, RuntimeError) else None
+            return log_and_format_error(func.__name__, e, user_message=user_message)
         return await func(*args, **kwargs)
 
     return wrapper
@@ -4932,6 +4933,12 @@ async def _start_telegram_client() -> None:
     try:
         await client.start()
         await client.get_dialogs()
+    except telethon.errors.rpcerrorlist.AuthKeyDuplicatedError as e:
+        raise RuntimeError(
+            "Telegram session was invalidated because it was used from multiple IP addresses "
+            "at the same time. Generate a new TELEGRAM_SESSION_STRING and ensure exactly one "
+            "live deployment or local process uses it."
+        ) from e
     except Exception as e:
         if isinstance(e, sqlite3.OperationalError) and "database is locked" in str(e):
             raise RuntimeError(
@@ -4992,7 +4999,6 @@ async def lifespan(_app: Starlette):
     _validate_runtime_configuration()
 
     async with AsyncExitStack() as stack:
-        await _start_telegram_client()
         await stack.enter_async_context(mcp.session_manager.run())
         try:
             yield
